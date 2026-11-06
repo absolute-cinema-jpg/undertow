@@ -1,0 +1,20 @@
+{
+  "title": "Undertow",
+  "rules": [
+    {
+      "description": "Right Command + U toggles the Undertow panel",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "u",
+            "modifiers": { "mandatory": ["right_command"] }
+          },
+          "to": [
+            { "shell_command": "/Applications/Undertow.app/Contents/MacOS/Undertow --toggle-panel" }
+          ]
+        }
+      ]
+    }
+  ]
+}
