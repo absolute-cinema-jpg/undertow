@@ -168,3 +168,41 @@ public enum DragReorder {
         return result
     }
 }
+
+public enum GraphScaleMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case bands, recentPeak
+    public var id: String { rawValue }
+    public var label: String { self == .bands ? "Fixed bands" : "Fit to recent peak" }
+}
+
+/// Maps a speed to a height on the graph. With fixed bands, each band gets an equal share
+/// of the height: by default 0–1 Mbps fills the bottom quarter, 1–10 Mbps the next, and so on.
+/// A quiet connection therefore stays low instead of being stretched to fill the graph.
+public enum GraphScale {
+    /// 1, 10, 100 and 1000 Mbps, stored as bytes per second like every other rate.
+    public static let defaultLimits: [Double] = [125_000, 1_250_000, 12_500_000, 125_000_000]
+
+    /// Why a set of band limits can't be used, or nil if it's fine.
+    public static func problem(with limits: [Double]) -> String? {
+        guard limits.count == defaultLimits.count else { return "There must be \(defaultLimits.count) bands." }
+        guard limits.allSatisfy({ $0 > 0 && $0.isFinite }) else { return "Every band needs a speed above zero." }
+        for i in 1..<limits.count where limits[i] <= limits[i - 1] {
+            return "Each band has to go higher than the one below it."
+        }
+        return nil
+    }
+
+    /// 0 to 1. Linear within each band. Anything above the top band stays at the top.
+    public static func fraction(of rate: Double, limits: [Double]) -> Double {
+        let bands = problem(with: limits) == nil ? limits : defaultLimits
+        guard rate > 0 else { return 0 }
+        var lower = 0.0
+        for (i, upper) in bands.enumerated() {
+            if rate <= upper {
+                return (Double(i) + (rate - lower) / (upper - lower)) / Double(bands.count)
+            }
+            lower = upper
+        }
+        return 1
+    }
+}

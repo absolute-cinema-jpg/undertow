@@ -66,6 +66,9 @@ fi
 cp .build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"  # the GPL requires the license to travel with the binary
 
+# The updater's helper is signed first, so the app's own signature below seals it inside.
+scripts/embed-updater-helper.sh "$APP" Sources/Undertow > /dev/null
+
 # Ad-hoc signature: enough to run on this Mac. Distributing without a warning would need a
 # Developer ID certificate and notarisation. The hardened runtime stops other processes
 # injecting code into Undertow through environment variables such as DYLD_INSERT_LIBRARIES.

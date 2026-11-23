@@ -256,8 +256,8 @@ let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 func detector(installed: Date = t0.addingTimeInterval(-200_000), known: Set<String> = [], pairs: Set<String> = [], trusted: [String: String] = [:]) -> Detector {
     Detector(config: DetectorConfig(), installDate: installed, knownApps: known, knownPairs: pairs, trusted: trusted)
 }
-func flow(_ app: AppIdentity, tx: UInt64 = 0, rx: UInt64 = 0, dest: String = "Amazon", signer: SignerInfo? = nil, cls: FlowClass = .internet, outside: Bool = false) -> ObservedFlow {
-    ObservedFlow(app: app, signer: signer, cls: cls, destination: dest, rx: rx, tx: tx, outsideVPN: outside)
+func flow(_ app: AppIdentity, tx: UInt64 = 0, rx: UInt64 = 0, dest: String = "Amazon", signer: SignerInfo? = nil, cls: FlowClass = .internet, outside: Bool = false, endpoint: String? = nil) -> ObservedFlow {
+    ObservedFlow(app: app, signer: signer, cls: cls, destination: dest, rx: rx, tx: tx, outsideVPN: outside, interface: outside ? "Wi-Fi" : nil, endpoint: endpoint)
 }
 
 var d = detector()
@@ -326,6 +326,27 @@ check(ev.contains { $0.kind == .newDestination }, "ATTACK: an unsigned app claim
 d = detector(known: [uploader.id])
 ev = d.observe(flow(uploader, tx: 300_000, outside: true), now: t0, idleSeconds: 0)
 check(ev.contains { $0.kind == .outsideVPN }, "VPN bypass flagged")
+let leaker = identity("Leaker")
+d = detector(known: [leaker.id])
+ev = d.observe(flow(leaker, tx: 250_000, dest: "Anthropic", outside: true, endpoint: "160.79.104.10:443"), now: t0, idleSeconds: 0)
+let vpnAlert = ev.first { $0.kind == .outsideVPN }
+check(vpnAlert?.detail.contains("160.79.104.10:443") == true && vpnAlert?.detail.contains("over Wi-Fi") == true, "the alert names the exact address and network (got \(vpnAlert?.detail ?? "none"))")
+check(vpnAlert?.title == "Leaker sent data outside your VPN", "the alert says what happened, without implying intent")
+ev = d.observe(flow(leaker, tx: 1_000, dest: "Anthropic", outside: true), now: t0.addingTimeInterval(7 * 3600), idleSeconds: 0)
+check(!ev.contains { $0.kind == .outsideVPN }, "BUG: an idle leftover connection's keepalive doesn't repeat the alert every 6 hours")
+ev = d.observe(flow(leaker, tx: 250_000, dest: "Anthropic", outside: true), now: t0.addingTimeInterval(7 * 3600 + 60), idleSeconds: 0)
+check(ev.contains { $0.kind == .outsideVPN }, "a fresh 200 KB outside the VPN does alert again")
+var oldPrefsDict = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(Prefs())) as! [String: Any]
+oldPrefsDict["rememberRange"] = nil
+oldPrefsDict["lastRange"] = nil
+oldPrefsDict["defaultRange"] = "today"
+let upgraded = Prefs.decode(try! JSONSerialization.data(withJSONObject: oldPrefsDict))
+check(upgraded.rememberRange && upgraded.openingRange == .live, "after updating, the panel remembers the range from then on")
+var fixedRange = Prefs()
+fixedRange.rememberRange = false
+fixedRange.defaultRange = .week
+fixedRange.lastRange = .fiveMinutes
+check(fixedRange.openingRange == .week, "a fixed starting range wins when chosen")
 
 let goodSigner = SignerInfo(status: .developerID, teamID: "GOOD")
 d = detector(known: [uploader.id], pairs: ["\(uploader.id)|Amazon"], trusted: [uploader.id: "team:GOOD"])
@@ -422,6 +443,60 @@ prefs.apply(.minimal)
 check(prefs.visibleSections == [.apps] && prefs.menuContent == .upload && !prefs.reverseDNS, "presets change only the panel")
 prefs.apply(.everything)
 check(prefs.visibleSections.count == PanelSection.allCases.count, "everything shows all")
+
+// MARK: Which identities can be a VPN tunnel
+
+let vpnSigner = SignerInfo(status: .developerID, teamID: "T", isPacketTunnel: true)
+func ident(path: String, kind: AppKind = .app) -> AppIdentity {
+    AppIdentity(id: path, name: "x", kind: kind, path: path, executable: nil, bundleID: nil, explanation: nil, claimsBrowser: false, launchedBy: nil)
+}
+check(ident(path: "/Library/SystemExtensions/X/a.systemextension").isVerifiedTunnel(signer: vpnSigner), "a verified VPN system extension is a tunnel")
+check(ident(path: "/Applications/V.app/Contents/PlugIns/t.appex").isVerifiedTunnel(signer: vpnSigner), "a verified VPN app extension is a tunnel")
+check(!ident(path: "/Applications/ProtonVPN.app").isVerifiedTunnel(signer: vpnSigner), "the VPN's main app carries the entitlement too, but its own traffic isn't an envelope")
+check(!ident(path: "/Library/SystemExtensions/X/a.systemextension").isVerifiedTunnel(signer: nil), "an unchecked extension isn't a tunnel yet")
+check(!ident(path: "/x/fake.appex").isVerifiedTunnel(signer: SignerInfo(status: .adHoc, codeHash: "x")), "an unverified extension is never a tunnel")
+
+// MARK: Graph scale
+
+let mbps = 125_000.0  // 1 Mbps in bytes per second
+let bands = GraphScale.defaultLimits
+check(bands == [1 * mbps, 10 * mbps, 100 * mbps, 1000 * mbps], "default bands are 1, 10, 100 and 1000 Mbps")
+check(GraphScale.fraction(of: 0, limits: bands) == 0, "idle sits at the bottom")
+check(abs(GraphScale.fraction(of: 1 * mbps, limits: bands) - 0.25) < 1e-9, "1 Mbps tops the first band")
+check(abs(GraphScale.fraction(of: 5.5 * mbps, limits: bands) - 0.375) < 1e-9, "halfway through the second band")
+check(abs(GraphScale.fraction(of: 10 * mbps, limits: bands) - 0.5) < 1e-9, "10 Mbps is halfway up")
+check(abs(GraphScale.fraction(of: 100 * mbps, limits: bands) - 0.75) < 1e-9, "100 Mbps is three quarters up")
+check(GraphScale.fraction(of: 5000 * mbps, limits: bands) == 1, "above the top band stays at the top")
+check(GraphScale.fraction(of: 2_000, limits: bands) < 0.01, "a quiet 2 KB/s barely registers, instead of filling the graph")
+check(GraphScale.problem(with: [1, 1, 2, 3]) != nil && GraphScale.problem(with: [1, 2, 3]) != nil && GraphScale.problem(with: [0, 2, 3, 4]) != nil, "bad band sets are caught")
+check(GraphScale.fraction(of: 10 * mbps, limits: [5, 4, 3, 2]) == 0.5, "bad bands fall back to the defaults")
+check(GraphScale.fraction(of: 50 * mbps, limits: [10 * mbps, 50 * mbps, 200 * mbps, 900 * mbps]) == 0.5, "custom bands are honoured")
+var scalePrefs = Prefs()
+check(scalePrefs.graphScale == .bands, "fixed bands by default")
+scalePrefs.graphScale = .recentPeak
+check(scalePrefs.graphFraction(50, recentPeak: 100) == 0.5 && scalePrefs.graphFraction(500, recentPeak: 100) == 1, "the old fit-to-peak mode still works")
+
+// MARK: Last 5 minutes, in memory
+
+let r0 = Date(timeIntervalSince1970: 1_800_000_000)
+let recentUsage = RecentUsage(window: 360, bucketSeconds: 5)
+recentUsage.add(now: r0.addingTimeInterval(-400), app: "old", name: "Old", path: nil, ip: "9.9.9.9", rx: 999, tx: 999)
+recentUsage.add(now: r0.addingTimeInterval(-200), app: "a", name: "App A", path: "/a", ip: "1.1.1.1", rx: 100, tx: 10)
+recentUsage.add(now: r0.addingTimeInterval(-199), app: "a", name: "App A", path: "/a", ip: "1.1.1.1", rx: 100, tx: 10)
+recentUsage.add(now: r0.addingTimeInterval(-60), app: "a", name: "App A", path: "/a", ip: "8.8.8.8", rx: 1, tx: 5000)
+recentUsage.add(now: r0.addingTimeInterval(-10), app: "b", name: "App B", path: nil, ip: "8.8.8.8", rx: 50, tx: 50)
+let since5 = TimeRange.fiveMinutes.start(now: r0)
+check(since5 == r0.addingTimeInterval(-300), "5 minutes means 300 seconds")
+let recentApps = recentUsage.topApps(since: since5)
+check(recentApps.map(\.id) == ["a", "b"], "ranked, and older traffic is excluded (got \(recentApps.map(\.id)))")
+check(recentApps.first?.rx == 201 && recentApps.first?.tx == 5020 && recentApps.first?.name == "App A" && recentApps.first?.path == "/a", "per-app totals keep the name and path")
+check(recentUsage.topDestinations(since: since5, app: "a").count == 2, "an app's destinations")
+check(recentUsage.topDestinations(since: since5).first { $0.ip == "8.8.8.8" }?.tx == 5050, "destinations combine every app")
+check(recentUsage.apps(forIPs: ["8.8.8.8"], since: since5).map(\.id) == ["a", "b"], "who talked to an address")
+check(recentUsage.topApps(since: r0.addingTimeInterval(-30)).map(\.id) == ["b"], "a shorter span narrows the totals")
+recentUsage.add(now: r0.addingTimeInterval(500), app: "c", name: "C", path: nil, ip: "2.2.2.2", rx: 1, tx: 1)
+check(recentUsage.topApps(since: .distantPast).map(\.id) == ["c"], "buckets older than the window are dropped from memory")
+check(TimeRange.allCases.firstIndex(of: .fiveMinutes) == 1, "5 min sits between Live and 1 hour")
 
 // MARK: Ledger
 

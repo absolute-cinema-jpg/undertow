@@ -46,6 +46,19 @@ public struct AppIdentity: Equatable, Sendable, Identifiable {
         kind == .system || kind == .kernel || (kind == .app && signer?.status == .apple)
     }
 
+    /// Packet-tunnel VPNs on macOS always run as a system or app extension.
+    public var isExtension: Bool {
+        guard let path else { return false }
+        return path.hasSuffix(".systemextension") || path.hasSuffix(".appex")
+    }
+
+    /// A VPN tunnel provider: an extension whose verified signature carries Apple's VPN
+    /// entitlement. The entitlement on its own isn't enough, because the VPN's main app carries
+    /// it too, and that app's own traffic is ordinary internet traffic.
+    public func isVerifiedTunnel(signer: SignerInfo?) -> Bool {
+        isExtension && signer?.isPacketTunnel == true
+    }
+
     public func isVerifiedBrowser(signer: SignerInfo?) -> Bool {
         claimsBrowser && signer?.status.isVerified == true
     }
@@ -149,7 +162,12 @@ public final class IdentityResolver {
 
     public func identity(for pid: Int32) -> AppIdentity {
         if pid == 0 { return kernelIdentity }
-        let path = Self.path(of: pid) ?? knownPaths[pid]?.path
+        let live = Self.path(of: pid)
+        // A process can replace itself with another program and keep its pid, as a shell does
+        // when it runs a script's last command. Keeping the current path means connections it
+        // leaves behind after exiting are credited to what it became, not what it started as.
+        if let live { knownPaths[pid] = (live, nil) }
+        let path = live ?? knownPaths[pid]?.path
         guard let path else { return exitedIdentity }
         if let cached = byPID[pid], cached.path == path { return cached.identity }
         let resolved = resolve(pid: pid, path: path)

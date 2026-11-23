@@ -47,7 +47,10 @@ struct PanelView: View {
     @ViewBuilder private var content: some View {
         switch store.route {
         case .home:
-            HomeSections()
+            VStack(alignment: .leading, spacing: 12) {
+                UpdateBanner(showDetails: openSettings)  // hidden unless there's an update to mention
+                HomeSections()
+            }
         case .app(let id):
             AppDetailView(appID: id)
         case .destination(let key):
@@ -221,16 +224,31 @@ struct GraphSection: View {
                     func x(_ s: GraphSample) -> CGFloat {
                         size.width * CGFloat(1 - now.timeIntervalSince(s.date) / span)
                     }
+                    let prefs = store.prefs
                     func area(_ value: (GraphSample) -> Double, peak: Double, height: CGFloat, sign: CGFloat) -> Path {
                         var p = Path()
                         guard let first = samples.first else { return p }
                         p.move(to: CGPoint(x: x(first), y: mid))
                         for s in samples {
-                            p.addLine(to: CGPoint(x: x(s), y: mid - sign * height * CGFloat(value(s) / peak)))
+                            let h = CGFloat(prefs.graphFraction(value(s), recentPeak: peak))
+                            p.addLine(to: CGPoint(x: x(s), y: mid - sign * height * h))
                         }
                         p.addLine(to: CGPoint(x: x(samples[samples.count - 1]), y: mid))
                         p.closeSubpath()
                         return p
+                    }
+                    // Faint lines where one band ends and the next begins, so heights can be read at a glance.
+                    if prefs.graphScale == .bands {
+                        var guides = Path()
+                        let count = prefs.graphBandLimits.count
+                        for i in 1..<count {
+                            let f = CGFloat(i) / CGFloat(count)
+                            guides.move(to: CGPoint(x: 0, y: mid - (mid - 4) * f))
+                            guides.addLine(to: CGPoint(x: size.width, y: mid - (mid - 4) * f))
+                            guides.move(to: CGPoint(x: 0, y: mid + (size.height - mid - 2) * f))
+                            guides.addLine(to: CGPoint(x: size.width, y: mid + (size.height - mid - 2) * f))
+                        }
+                        ctx.stroke(guides, with: .color(.secondary.opacity(0.15)), style: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
                     }
                     ctx.fill(area(\.down, peak: peakDown, height: mid - 4, sign: 1), with: .color(theme.download.opacity(0.75)))
                     ctx.fill(area(\.up, peak: peakUp, height: size.height - mid - 2, sign: -1), with: .color(theme.upload.opacity(0.75)))
@@ -271,6 +289,8 @@ struct GraphSection: View {
                     if let nearest {
                         Text("\(Int(secondsAgo))s ago  ↓\(theme.rate(nearest.down))  ↑\(theme.rate(nearest.up))")
                     }
+                } else if store.prefs.graphScale == .bands {
+                    Text(bandCaption)
                 } else {
                     Text("peak ↓\(theme.rate(peakDown))  ↑\(theme.rate(peakUp))")
                 }
@@ -280,6 +300,14 @@ struct GraphSection: View {
         .font(.system(size: 9.5).monospacedDigit())
         .foregroundStyle(.secondary)
         .allowsHitTesting(false)
+    }
+
+    /// e.g. "bands 1 · 10 · 100 Mbps · 1 Gbps"
+    private var bandCaption: String {
+        let limits = GraphScale.problem(with: store.prefs.graphBandLimits) == nil ? store.prefs.graphBandLimits : GraphScale.defaultLimits
+        return "bands " + limits.map {
+            Format.tightRate($0, unit: store.prefs.units, decimals: 1).replacingOccurrences(of: ".0 ", with: " ")
+        }.joined(separator: " · ")
     }
 }
 

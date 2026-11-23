@@ -139,11 +139,12 @@ public enum Palette: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 public enum TimeRange: String, Codable, CaseIterable, Identifiable, Sendable {
-    case live, hour, today, week, month
+    case live, fiveMinutes, hour, today, week, month
     public var id: String { rawValue }
     public var label: String {
         switch self {
         case .live: return "Live"
+        case .fiveMinutes: return "5 min"
         case .hour: return "1 hour"
         case .today: return "Today"
         case .week: return "7 days"
@@ -152,6 +153,7 @@ public enum TimeRange: String, Codable, CaseIterable, Identifiable, Sendable {
     }
     public func start(now: Date, calendar: Calendar = .current) -> Date {
         switch self {
+        case .fiveMinutes: return now.addingTimeInterval(-300)
         case .live, .hour: return now.addingTimeInterval(-3600)
         case .today: return calendar.startOfDay(for: now)
         case .week: return now.addingTimeInterval(-7 * 86400)
@@ -202,7 +204,24 @@ public struct Prefs: Codable, Equatable, Sendable {
     public var palette: Palette = .classic
     public var rowLimit: Int = 6
     public var graphSpan: Int = 300
+    public var graphScale: GraphScaleMode = .bands
+    /// Upper limits of the graph's bands in bytes per second, lowest first.
+    public var graphBandLimits: [Double] = GraphScale.defaultLimits
+
+    /// Height on the graph for a speed, from 0 to 1. `recentPeak` is only used in that mode.
+    public func graphFraction(_ rate: Double, recentPeak: Double) -> Double {
+        switch graphScale {
+        case .bands: return GraphScale.fraction(of: rate, limits: graphBandLimits)
+        case .recentPeak: return recentPeak > 0 ? min(1, max(0, rate / recentPeak)) : 0
+        }
+    }
     public var defaultRange: TimeRange = .live
+    /// Reopen the panel on whichever range was picked last, instead of `defaultRange`.
+    public var rememberRange: Bool = true
+    public var lastRange: TimeRange = .live
+
+    /// The range the panel should open on.
+    public var openingRange: TimeRange { rememberRange ? lastRange : defaultRange }
 
     // Row details
     public var showIcons: Bool = true

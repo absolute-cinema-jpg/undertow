@@ -47,7 +47,7 @@ public enum WatchKind: String, Codable, CaseIterable, Sendable, Identifiable {
         case .largeUpload: return "Large uploads"
         case .idleUpload: return "Uploads while you're away"
         case .unsignedSender: return "Unsigned apps sending data"
-        case .outsideVPN: return "Traffic bypassing the VPN"
+        case .outsideVPN: return "Traffic sent outside the VPN"
         case .newApp: return "Apps using the network for the first time"
         case .newDestination: return "Apps sending data somewhere new"
         }
@@ -112,7 +112,10 @@ public struct ObservedFlow: Sendable {
     public var tx: UInt64
     public var outsideVPN: Bool
     public var interface: String?
-    public init(app: AppIdentity, signer: SignerInfo?, cls: FlowClass, destination: String, rx: UInt64, tx: UInt64, outsideVPN: Bool, interface: String? = nil) {
+    /// The exact address and port, e.g. "160.79.104.10:443", so an alert can be checked.
+    public var endpoint: String?
+    public init(app: AppIdentity, signer: SignerInfo?, cls: FlowClass, destination: String, rx: UInt64, tx: UInt64, outsideVPN: Bool, interface: String? = nil, endpoint: String? = nil) {
+        self.endpoint = endpoint
         self.app = app
         self.signer = signer
         self.cls = cls
@@ -226,12 +229,19 @@ public final class Detector {
         }
 
         // Outside the VPN, your ISP can see this traffic. Apple's own services do this by design.
+        // Counts only what has gone outside since the last alert. A connection left over from
+        // a VPN reconnect can sit on Wi-Fi for days sending the odd keepalive, and that shouldn't
+        // repeat the alert every time the cooldown runs out.
         if flow.outsideVPN, !verifiedApple {
             let total = (outsideVPNBytes[app.id] ?? 0) + flow.rx + flow.tx
-            outsideVPNBytes[app.id] = total
             if total >= config.outsideVPNMinBytes, !onCooldown("vpn|\(app.id)", now: now, seconds: 21600) {
+                outsideVPNBytes[app.id] = 0
                 let via = flow.interface.map { " over \($0)" } ?? ""
-                emit(.outsideVPN, "\(app.name) is bypassing your VPN", "Connected to \(flow.destination)\(via) instead of through the tunnel.")
+                let address = flow.endpoint.map { " (\($0))" } ?? ""
+                emit(.outsideVPN, "\(app.name) sent data outside your VPN",
+                     "\(Format.bytes(total)) to \(flow.destination)\(address)\(via), not through the tunnel. This usually means the connection opened while the VPN was off or reconnecting. A VPN kill switch prevents it.")
+            } else {
+                outsideVPNBytes[app.id] = total
             }
         }
 

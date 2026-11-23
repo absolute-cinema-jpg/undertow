@@ -144,6 +144,23 @@ struct PanelSettings: View {
                 Toggle("Show the VPN's own tunnel in lists", isOn: $store.prefs.showVPNEnvelope)
             }
 
+            Section {
+                Picker("Scale", selection: $store.prefs.graphScale) {
+                    ForEach(GraphScaleMode.allCases) { Text($0.label).tag($0) }
+                }
+                if store.prefs.graphScale == .bands {
+                    // Rebuilt when the units change, so the fields switch between Mbps and MB/s.
+                    GraphBandEditor(limits: store.prefs.graphBandLimits, unit: store.prefs.units)
+                        .id(store.prefs.units)
+                }
+            } header: {
+                Text("Speed graph scale")
+            } footer: {
+                FooterText(store.prefs.graphScale == .bands
+                    ? "Each band takes an equal share of the graph's height, and anything above the top band fills it. These also apply to the menu bar's activity graph."
+                    : "The graph stretches to fit the busiest moment it shows, so even light traffic can fill it.")
+            }
+
             Section("Layout") {
                 Picker("Rows per list", selection: $store.prefs.rowLimit) {
                     ForEach([3, 5, 6, 8, 10, 15, 25], id: \.self) { Text("\($0)").tag($0) }
@@ -163,8 +180,19 @@ struct PanelSettings: View {
                 Picker("Colours", selection: $store.prefs.palette) {
                     ForEach(Palette.allCases) { Text($0.label).tag($0) }
                 }
-                Picker("Open showing", selection: $store.prefs.defaultRange) {
-                    ForEach(TimeRange.allCases) { Text($0.label).tag($0) }
+                Picker("Open showing", selection: Binding(
+                    get: { store.prefs.rememberRange ? "last" : store.prefs.defaultRange.rawValue },
+                    set: { choice in
+                        if let range = TimeRange(rawValue: choice) {
+                            store.prefs.rememberRange = false
+                            store.prefs.defaultRange = range
+                        } else {
+                            store.prefs.rememberRange = true
+                        }
+                    })) {
+                    Text("Last range used").tag("last")
+                    Divider()
+                    ForEach(TimeRange.allCases) { Text($0.label).tag($0.rawValue) }
                 }
             }
         }
@@ -380,6 +408,8 @@ struct DataSettings: View {
 
     var body: some View {
         Form {
+            UpdatesSection()
+
             Section("General") {
                 Toggle("Open at login", isOn: Binding(
                     get: { loginEnabled },
@@ -390,7 +420,7 @@ struct DataSettings: View {
                 if let loginError {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
-                Picker("Update every", selection: $store.prefs.interval) {
+                Picker("Refresh speeds every", selection: $store.prefs.interval) {
                     Text("1 second").tag(1.0)
                     Text("2 seconds").tag(2.0)
                     Text("5 seconds").tag(5.0)
@@ -441,7 +471,7 @@ struct DataSettings: View {
             } header: {
                 Text("Network activity by Undertow")
             } footer: {
-                FooterText("Hostname lookups go to your normal DNS server and latency checks ping your router and this address, both only while the panel is open. Undertow sends nothing else, apart from the owner table download above. A hostname only shows if it leads back to the same address, so a server can't pass itself off as someone else.")
+                FooterText("Hostname lookups go to your normal DNS server and latency checks ping your router and this address, both only while the panel is open. Undertow sends nothing else, apart from the owner table download above and update checks to GitHub (once a day, unless turned off under Updates). A hostname only shows if it leads back to the same address, so a server can't pass itself off as someone else.")
             }
         }
         .formStyle(.grouped)
@@ -454,6 +484,109 @@ struct DataSettings: View {
             Button("Reset Everything", role: .destructive) { store.clearHistory(includingBaseline: true) }
         } message: {
             Text("This erases history, alerts, trusted apps and known destinations, and starts the learning period again. This can't be undone.")
+        }
+    }
+}
+
+/// Edits the four band limits. Changes are saved only once every band is higher than the one
+/// below it, so the graph never runs on a half-typed value.
+struct GraphBandEditor: View {
+    @EnvironmentObject var store: AppStore
+    @State private var amounts: [String]
+    @State private var unitIndexes: [Int]
+    @State private var problem: String?
+    private let units: [(label: String, bytesPerSecond: Double)]
+
+    private static let bandNames = ["0–25%", "25–50%", "50–75%", "75–100%"]
+    private var bandNames: [String] { Self.bandNames }
+
+    /// Starts filled in, rather than loading on appear: an empty view never appears, so it
+    /// would never load.
+    init(limits: [Double], unit: RateUnit) {
+        let units: [(label: String, bytesPerSecond: Double)] = unit == .bits
+            ? [("Kbps", 125), ("Mbps", 125_000), ("Gbps", 125_000_000)]
+            : [("KB/s", 1_000), ("MB/s", 1_000_000), ("GB/s", 1_000_000_000)]
+        self.units = units
+        let shown = Self.display(limits, units: units)
+        _amounts = State(initialValue: shown.amounts)
+        _unitIndexes = State(initialValue: shown.unitIndexes)
+    }
+
+    var body: some View {
+        Group {
+            if amounts.count == bandNames.count {
+                ForEach(0..<bandNames.count, id: \.self) { i in
+                    HStack(spacing: 8) {
+                        Text(bandNames[i]).frame(width: 64, alignment: .leading)
+                        Text("up to").foregroundStyle(.secondary)
+                        Spacer()
+                        TextField("Speed for \(bandNames[i])", text: binding(for: i))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 70)
+                        Picker("Unit for \(bandNames[i])", selection: unitBinding(for: i)) {
+                            ForEach(0..<units.count, id: \.self) { u in Text(units[u].label).tag(u) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 84)
+                    }
+                }
+                if let problem {
+                    Text(problem + " The graph keeps your last valid bands until this is fixed.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    Spacer()
+                    Button("Reset to 1, 10, 100 Mbps and 1 Gbps") {
+                        store.prefs.graphBandLimits = GraphScale.defaultLimits
+                        let shown = Self.display(GraphScale.defaultLimits, units: units)
+                        amounts = shown.amounts
+                        unitIndexes = shown.unitIndexes
+                        problem = nil
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shows each limit in the largest unit that keeps it at 1 or more, e.g. 1 Mbps not 1000 Kbps.
+    private static func display(_ saved: [Double], units: [(label: String, bytesPerSecond: Double)]) -> (amounts: [String], unitIndexes: [Int]) {
+        let limits = GraphScale.problem(with: saved) == nil ? saved : GraphScale.defaultLimits
+        var amounts: [String] = []
+        var indexes: [Int] = []
+        for limit in limits {
+            let index = units.lastIndex { limit / $0.bytesPerSecond >= 1 } ?? 0
+            let value = limit / units[index].bytesPerSecond
+            amounts.append(String(format: "%g", (value * 1000).rounded() / 1000))
+            indexes.append(index)
+        }
+        return (amounts, indexes)
+    }
+
+    private func binding(for i: Int) -> Binding<String> {
+        Binding(get: { amounts[i] }, set: { amounts[i] = $0; save() })
+    }
+
+    private func unitBinding(for i: Int) -> Binding<Int> {
+        Binding(get: { unitIndexes[i] }, set: { unitIndexes[i] = $0; save() })
+    }
+
+    private func save() {
+        var limits: [Double] = []
+        for i in 0..<amounts.count {
+            let text = amounts[i].trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+            guard let value = Double(text) else {
+                problem = "\(bandNames[i]) needs a number."
+                return
+            }
+            limits.append(value * units[unitIndexes[i]].bytesPerSecond)
+        }
+        problem = GraphScale.problem(with: limits)
+        if problem == nil, limits != store.prefs.graphBandLimits {
+            store.prefs.graphBandLimits = limits
         }
     }
 }

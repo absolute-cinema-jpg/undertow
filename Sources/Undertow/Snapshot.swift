@@ -40,10 +40,19 @@ enum Snapshot {
         }
         panel("preset-minimal") {
             store.route = .home
+            store.range = .live  // the graph only shows in Live, whatever range was remembered
             store.prefs.apply(.minimal)
         }
         panel("preset-everything") { store.prefs.apply(.everything) }
+        panel("panel-5min") {
+            store.prefs = original
+            store.range = .fiveMinutes
+        }
+        panel("panel-5min-app") {
+            if let row = store.historyApps.first { store.route = .app(row.id) }
+        }
         panel("panel-today") {
+            store.route = .home
             store.prefs = original
             store.range = .today
         }
@@ -163,6 +172,19 @@ enum Snapshot {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                     expect(store.prefs.hiddenSections.contains(target), "clicking the switch hides that section")
                                     expect(store.prefs.sectionOrder == orderBeforeToggle, "clicking the switch doesn't reorder")
+                                    // The range picked in the panel should be there when it opens again.
+                                    store.setRange(.fiveMinutes)
+                                    store.range = .live
+                                    store.panelOpened()
+                                    expect(store.range == .fiveMinutes, "the range you picked is there when the panel reopens")
+                                    let saved = UserDefaults.standard.data(forKey: "prefs").map(Prefs.decode)
+                                    expect(saved?.openingRange == .fiveMinutes, "it's saved, so it survives quitting Undertow too")
+                                    var fixed = store.prefs
+                                    fixed.rememberRange = false
+                                    fixed.defaultRange = .today
+                                    store.prefs = fixed
+                                    store.panelOpened()
+                                    expect(store.range == .today, "a fixed starting range still works if you choose one")
                                     window.orderOut(nil)
                                     store.prefs = original
                                     print("settings restored: \(store.prefs == original)")

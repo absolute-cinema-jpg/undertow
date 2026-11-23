@@ -95,7 +95,7 @@ final class AppStore: ObservableObject {
     init() {
         let saved = UserDefaults.standard.data(forKey: "prefs").map(Prefs.decode) ?? Prefs()
         prefs = saved
-        range = saved.defaultRange
+        range = saved.openingRange
         monitor = Monitor(paths: .init(ledger: AppPaths.ledger, owners: AppPaths.owners), prefs: saved)
         events = monitor.ledger?.recentEvents() ?? []
 
@@ -119,7 +119,9 @@ final class AppStore: ObservableObject {
         guard isPanelOpen else { return }
         liveHeadline = headline
         refreshGraph()
-        if range != .live, Date().timeIntervalSince(lastHistoryRefresh) > 15 { refreshHistory() }
+        // The 5 minute view moves quickly, so it refreshes far more often than the saved history.
+        let refreshEvery: TimeInterval = range == .fiveMinutes ? 2 : 15
+        if range != .live, Date().timeIntervalSince(lastHistoryRefresh) > refreshEvery { refreshHistory() }
     }
 
     func refreshGraph() {
@@ -165,7 +167,7 @@ final class AppStore: ObservableObject {
 
     func panelOpened() {
         isPanelOpen = true
-        range = prefs.defaultRange
+        range = prefs.openingRange
         route = .home
         refreshGraph()
         monitor.setPanelOpen(true)
@@ -199,6 +201,8 @@ final class AppStore: ObservableObject {
 
     func setRange(_ new: TimeRange) {
         range = new
+        // Saved, so it survives closing the panel and quitting Undertow.
+        if prefs.lastRange != new { prefs.lastRange = new }
         refreshHistory()
     }
 
@@ -209,21 +213,33 @@ final class AppStore: ObservableObject {
         let since = window.start(now: Date())
         let currentRoute = route
         let monitor = monitor
+        // The last 5 minutes come from memory, everything longer from the saved hourly history.
+        let fromMemory = window == .fiveMinutes
         historyQueue.async { [weak self] in
-            guard let ledger = monitor.ledger else { return }
-            let apps = ledger.topApps(since: since).map {
+            let ledger = monitor.ledger
+            guard fromMemory || ledger != nil else { return }
+            func topApps() -> [UsageTotal] {
+                fromMemory ? monitor.recentUsage { $0.topApps(since: since) } : ledger?.topApps(since: since) ?? []
+            }
+            func topDestinations(app: String? = nil) -> [DestinationTotal] {
+                fromMemory ? monitor.recentUsage { $0.topDestinations(since: since, app: app) } : ledger?.topDestinations(since: since, app: app) ?? []
+            }
+            func appsTalkingTo(_ ips: [String]) -> [UsageTotal] {
+                fromMemory ? monitor.recentUsage { $0.apps(forIPs: ips, since: since) } : ledger?.apps(forIPs: ips, since: since) ?? []
+            }
+            let apps = topApps().map {
                 HistoryRow(id: $0.id, name: $0.name, path: $0.path, subtitle: nil, cls: .internet, rx: $0.rx, tx: $0.tx)
             }
-            let dests = Self.groupDestinations(ledger.topDestinations(since: since), monitor: monitor)
+            let dests = Self.groupDestinations(topDestinations(), monitor: monitor)
             var appDests: [HistoryRow] = []
             if case .app(let id) = currentRoute {
-                appDests = Self.groupDestinations(ledger.topDestinations(since: since, app: id), monitor: monitor)
+                appDests = Self.groupDestinations(topDestinations(app: id), monitor: monitor)
             }
             var destApps: [HistoryRow] = []
             if case .destination(let key) = currentRoute {
-                let ips = ledger.topDestinations(since: since)
+                let ips = topDestinations()
                     .filter { monitor.lookupDestination(ip: $0.ip).key == key }.map(\.ip)
-                destApps = ledger.apps(forIPs: ips, since: since).map {
+                destApps = appsTalkingTo(ips).map {
                     HistoryRow(id: $0.id, name: $0.name, path: $0.path, subtitle: nil, cls: .internet, rx: $0.rx, tx: $0.tx)
                 }
             }

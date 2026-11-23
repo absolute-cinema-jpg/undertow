@@ -17,10 +17,19 @@ if let flag = arguments.firstIndex(of: "--import-owners"), arguments.count > fla
 }
 
 // Maintenance: same action as the "Open at login" switch in Settings.
+// `--login-item on|off|status`. Anything else is refused rather than read as "off".
 if let flag = arguments.firstIndex(of: "--login-item"), arguments.count > flag + 1 {
-    if let error = LoginItem.set(arguments[flag + 1] == "on") {
-        print("Login item change failed: \(error)")
-        exit(1)
+    switch arguments[flag + 1] {
+    case "on", "off":
+        if let error = LoginItem.set(arguments[flag + 1] == "on") {
+            print("Login item change failed: \(error)")
+            exit(1)
+        }
+    case "status":
+        break
+    default:
+        print("Use --login-item on, off or status")
+        exit(2)
     }
     print("Login item status: \(LoginItem.statusDescription)")
     exit(0)

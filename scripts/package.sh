@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds a universal release zip and prints its checksum.
+# Builds a universal release zip, with the .sha256 file the updater checks.
 #
 #   scripts/package.sh 1.0.0
 set -euo pipefail
@@ -14,8 +14,6 @@ if [ "$PLIST_VERSION" != "$VERSION" ]; then
 fi
 
 scripts/build.sh universal
-ZIP="dist/Undertow-$VERSION.zip"
-rm -f "$ZIP"
-ditto -c -k --keepParent dist/Undertow.app "$ZIP"
-lipo -archs dist/Undertow.app/Contents/MacOS/Undertow
-shasum -a 256 "$ZIP"
+# Zips the way the updater expects, writes the .sha256 it checks, and verifies the result:
+# version, signature, the updater helper inside, and both architectures.
+scripts/make-release.sh dist/Undertow.app Undertow- dist

@@ -84,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             return
         }
         PanelCommand.listen(self, selector: #selector(togglePanelAction))
+        LoginItem.restoreIfWanted()
+        Updater.shared.presentingWindow = { [weak self] in self?.settingsWindow }
+        Updater.shared.start()
         if CommandLine.arguments.contains("--open-panel") {
             // Long enough for the status item to take its place in the menu bar.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.togglePanel() }
@@ -157,6 +160,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Panel", action: #selector(togglePanelAction), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(openSettingsAction), keyEquivalent: ",").target = self
+        if Updater.shared.phase == .available, let version = Updater.shared.update?.version {
+            menu.addItem(withTitle: "Update to \(version)…", action: #selector(installUpdate), keyEquivalent: "").target = self
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Undertow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
@@ -165,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     @objc private func togglePanelAction() { togglePanel() }
+    @objc private func installUpdate() { Updater.shared.installAsking() }
     @objc private func openSettingsAction() { openSettings() }
 
     private func togglePanel() {
@@ -362,7 +369,7 @@ enum StatusImage {
                     x += dotWidth
                 }
                 if !spark.isEmpty {
-                    drawSpark(spark, in: NSRect(x: x, y: 4, width: sparkWidth - 2, height: barHeight - 8), colour: colour)
+                    drawSpark(spark, in: NSRect(x: x, y: 4, width: sparkWidth - 2, height: barHeight - 8), colour: colour, prefs: prefs)
                     x += sparkWidth + (isIconOnly ? 0 : 3)
                 }
                 if isIconOnly {
@@ -401,7 +408,7 @@ enum StatusImage {
         return image
     }
 
-    private static func drawSpark(_ allValues: [Double], in rect: NSRect, colour: NSColor) {
+    private static func drawSpark(_ allValues: [Double], in rect: NSRect, colour: NSColor, prefs: Prefs) {
         let values = Array(allValues.suffix(sparkBars))
         guard values.count > 1, let peak = values.max(), peak > 0 else {
             colour.withAlphaComponent(0.4).setFill()
@@ -413,7 +420,10 @@ enum StatusImage {
         let start = rect.maxX - barWidth * CGFloat(values.count)
         colour.setFill()
         for (i, v) in values.enumerated() {
-            let h = max(1, CGFloat(sqrt(v / peak)) * rect.height)
+            // Fixed bands match the panel's graph. Fitting to the peak uses a square root, so small
+            // activity is still visible next to a burst.
+            let f = prefs.graphScale == .bands ? prefs.graphFraction(v, recentPeak: peak) : sqrt(v / peak)
+            let h = max(1, CGFloat(f) * rect.height)
             NSBezierPath(rect: NSRect(x: start + CGFloat(i) * barWidth, y: rect.minY, width: max(1, barWidth - 0.5), height: h)).fill()
         }
     }
@@ -450,8 +460,13 @@ enum LoginItem {
         }
     }
 
+    /// What you chose, kept separately from macOS's own record. That record is tied to this
+    /// exact build, so after an update macOS no longer counts Undertow as a login item.
+    private static let wantedKey = "OpenAtLoginWanted"
+
     /// Returns an error message on failure, for showing in Settings.
     static func set(_ enabled: Bool) -> String? {
+        UserDefaults.standard.set(enabled, forKey: wantedKey)
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -462,5 +477,20 @@ enum LoginItem {
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// Called at launch. Re-registers after an update, if you'd turned "Open at login" on.
+    static func restoreIfWanted() {
+        let defaults = UserDefaults.standard
+        let status = SMAppService.mainApp.status
+        if defaults.object(forKey: wantedKey) == nil {
+            // From a version before this setting was remembered: take macOS's word for it.
+            if status == .enabled { defaults.set(true, forKey: wantedKey) }
+            return
+        }
+        // After an update macOS reports "not found" rather than "not registered", so anything
+        // other than enabled (or waiting for your approval in System Settings) gets re-registered.
+        guard defaults.bool(forKey: wantedKey), status != .enabled, status != .requiresApproval else { return }
+        try? SMAppService.mainApp.register()
     }
 }

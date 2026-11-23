@@ -176,6 +176,20 @@ public final class Monitor {
     private var lastPrune: Date?
     private var tunnelActive = false
     private var nextLocalEventID: Int64 = -1
+    private let recent = RecentUsage()
+
+    private struct HeldUsage {
+        var row: SocketRow
+        var identity: AppIdentity
+        var rx: UInt64
+        var tx: UInt64
+        var since: Date
+    }
+    /// Traffic from extensions still waiting for their signature check, by socket.
+    private var heldForSignature: [SocketKey: HeldUsage] = [:]
+    /// If a check somehow never finishes, the traffic is counted as unverified rather than lost.
+    static let maxSignatureHold: TimeInterval = 30
+    private let inspectSignature: (String) -> SignerInfo
     private var ownerCache: [String: OwnerRecord?] = [:]
 
     private struct ConnAgg {
@@ -213,8 +227,10 @@ public final class Monitor {
     private var probeRunning = false
     private var lastHeadline = Headline()
 
-    public init(paths: Paths, prefs: Prefs, now: Date = Date()) {
+    /// `inspectSignature` can be swapped out for testing, for example to simulate a slow check.
+    public init(paths: Paths, prefs: Prefs, now: Date = Date(), inspectSignature: @escaping (String) -> SignerInfo = CodeSigning.inspect) {
         self.prefs = prefs
+        self.inspectSignature = inspectSignature
         ledger = Ledger(path: paths.ledger)
         owners = OwnerDatabase(path: paths.owners)
         let install = ledger?.installDate(now: now) ?? now
@@ -284,8 +300,8 @@ public final class Monitor {
             guard let path else { return }
             // Always a fresh check: this is the moment the signature gets written down.
             signingQueue.addOperation { [weak self] in
-                let key = CodeSigning.inspect(path: path).trustKey
-                self?.queue.async { if let key { apply(key) } }
+                let key = self?.inspectSignature(path).trustKey
+                self?.queue.async { if let key = key ?? nil { apply(key) } }
             }
         }
     }
@@ -359,73 +375,32 @@ public final class Monitor {
         var tickRates: [String: [String: (rx: UInt64, tx: UInt64)]] = [:]
         var newEvents: [WatchEvent] = replayPendingFlows(now: now, idle: idle)
 
+        // Traffic held back for a signature check counts toward totals and alerts, not live rates.
+        // It built up over several seconds, so showing it as one second's rate would be a false spike.
+        for (key, held) in heldForSignature {
+            let known = signer(for: held.identity)
+            guard known != nil || now.timeIntervalSince(held.since) > Self.maxSignatureHold else { continue }
+            heldForSignature[key] = nil
+            account(row: held.row, rx: held.rx, tx: held.tx, identity: held.identity, signer: known, now: now, nowNS: nowNS,
+                    dt: dt, live: false, idle: idle, headline: &headline, tickRates: &tickRates, events: &newEvents)
+        }
+
         for delta in deltas {
             let row = delta.row
             let identity = resolver.identity(for: row.ownerPID)
-            let iface = row.localIP.flatMap { addressMap[$0] }
-            let onTunnel = iface.map(Self.isTunnel) ?? false
             let currentSigner = signer(for: identity)
-            let cls = FlowClassifier.classify(
-                row, isVerifiedTunnel: currentSigner?.isPacketTunnel ?? false, tunnelActive: tunnelActive,
-                onTunnelInterface: onTunnel, isVerifiedSystem: identity.isVerifiedApple(signer: currentSigner))
-            guard cls != .ignored else { continue }
-
-            let down = Double(delta.rx) / dt
-            let up = Double(delta.tx) / dt
-            switch cls {
-            case .internet:
-                headline.internet.down += down
-                headline.internet.up += up
-            case .local:
-                headline.local.down += down
-                headline.local.up += up
-            case .envelope:
-                headline.envelope.down += down
-                headline.envelope.up += up
-            case .ignored:
-                break
+            // An unchecked extension might be a VPN, whose outer traffic must not count, or an
+            // impostor, whose traffic must. Until the check says which, hold its bytes back.
+            if tunnelActive, identity.isExtension, currentSigner == nil, heldForSignature.count < 2000 {
+                var held = heldForSignature[row.key] ?? HeldUsage(row: row, identity: identity, rx: 0, tx: 0, since: now)
+                held.row = row
+                held.rx += delta.rx
+                held.tx += delta.tx
+                heldForSignature[row.key] = held
+                continue
             }
-
-            // Public traffic that left through real hardware while a VPN holds the default route.
-            let outsideVPN = route.vpnActive && cls == .internet && row.remoteIP != nil && iface != nil && !onTunnel
-
-            let connKey = "\(row.remoteIP ?? "*")|\(row.remotePort.map(String.init) ?? "*")|\(row.proto.rawValue)|\(cls.rawValue)"
-            var app = apps[identity.id] ?? AppAgg(identity: identity)
-            app.identity = identity
-            app.totalDown += delta.rx
-            app.totalUp += delta.tx
-            var conn = app.conns[connKey] ?? ConnAgg(ip: row.remoteIP, port: row.remotePort, proto: row.proto, iface: iface, cls: cls)
-            conn.totalDown += delta.rx
-            conn.totalUp += delta.tx
-            conn.sockets.insert(row.key)
-            conn.lastActive = nowNS
-            conn.outsideVPN = conn.outsideVPN || outsideVPN
-            conn.iface = iface ?? conn.iface
-            app.conns[connKey] = conn
-            apps[identity.id] = app
-
-            var bucket = tickRates[identity.id] ?? [:]
-            let previous = bucket[connKey] ?? (0, 0)
-            bucket[connKey] = (previous.rx + delta.rx, previous.tx + delta.tx)
-            tickRates[identity.id] = bucket
-
-            if prefs.recordHistory, cls == .internet || cls == .local {
-                ledger?.addUsage(now: now, app: identity.id, ip: row.remoteIP ?? "*", rx: delta.rx, tx: delta.tx)
-            }
-
-            // Undertow still lists its own traffic, but it has nothing to gain from alerting about itself.
-            if cls == .internet, identity.executable == nil || identity.executable != ownExecutable {
-                let destination = alertDestination(ip: row.remoteIP)
-                let flow = ObservedFlow(
-                    app: identity, signer: currentSigner, cls: cls, destination: destination,
-                    rx: delta.rx, tx: delta.tx, outsideVPN: outsideVPN, interface: iface.map(interfaceLabel))
-                if identity.kind != .exited, delta.tx > 0 { activePairs.insert("\(identity.id)|\(destination)") }
-                if identity.path != nil, currentSigner == nil {
-                    deferFlow(flow)
-                } else {
-                    newEvents += detector.observe(flow, now: now, idleSeconds: idle)
-                }
-            }
+            account(row: row, rx: delta.rx, tx: delta.tx, identity: identity, signer: currentSigner, now: now, nowNS: nowNS,
+                    dt: dt, live: true, idle: idle, headline: &headline, tickRates: &tickRates, events: &newEvents)
         }
 
         smoothRates(tickRates: tickRates, dt: dt, nowNS: nowNS)
@@ -460,6 +435,91 @@ public final class Monitor {
         if panelOpen {
             maybeProbe(nowNS: nowNS)
             publishDetail()
+        }
+    }
+
+    /// Counts one socket's traffic: classifies it, then adds it to the totals, the in-memory
+    /// recent window, the saved history and the alert checks. `live` also adds it to the
+    /// headline and row rates.
+    private func account(row: SocketRow, rx: UInt64, tx: UInt64, identity: AppIdentity, signer currentSigner: SignerInfo?,
+                         now: Date, nowNS: UInt64, dt: Double, live: Bool, idle: Double,
+                         headline: inout Headline, tickRates: inout [String: [String: (rx: UInt64, tx: UInt64)]],
+                         events newEvents: inout [WatchEvent]) {
+        let iface = row.localIP.flatMap { addressMap[$0] }
+        let onTunnel = iface.map(Self.isTunnel) ?? false
+        let cls = FlowClassifier.classify(
+            row, isVerifiedTunnel: identity.isVerifiedTunnel(signer: currentSigner), tunnelActive: tunnelActive,
+            onTunnelInterface: onTunnel, isVerifiedSystem: identity.isVerifiedApple(signer: currentSigner))
+        guard cls != .ignored else { return }
+
+        if live {
+            let down = Double(rx) / dt
+            let up = Double(tx) / dt
+            switch cls {
+            case .internet:
+                headline.internet.down += down
+                headline.internet.up += up
+            case .local:
+                headline.local.down += down
+                headline.local.up += up
+            case .envelope:
+                headline.envelope.down += down
+                headline.envelope.up += up
+            case .ignored:
+                break
+            }
+        }
+
+        // Public traffic that left through real hardware while a VPN holds the default route.
+        let outsideVPN = route.vpnActive && cls == .internet && row.remoteIP != nil && iface != nil && !onTunnel
+
+        let connKey = "\(row.remoteIP ?? "*")|\(row.remotePort.map(String.init) ?? "*")|\(row.proto.rawValue)|\(cls.rawValue)"
+        var app = apps[identity.id] ?? AppAgg(identity: identity)
+        app.identity = identity
+        app.totalDown += rx
+        app.totalUp += tx
+        var conn = app.conns[connKey] ?? ConnAgg(ip: row.remoteIP, port: row.remotePort, proto: row.proto, iface: iface, cls: cls)
+        conn.totalDown += rx
+        conn.totalUp += tx
+        conn.sockets.insert(row.key)
+        conn.lastActive = nowNS
+        conn.outsideVPN = conn.outsideVPN || outsideVPN
+        conn.iface = iface ?? conn.iface
+        app.conns[connKey] = conn
+        apps[identity.id] = app
+
+        if live {
+            var bucket = tickRates[identity.id] ?? [:]
+            let previous = bucket[connKey] ?? (0, 0)
+            bucket[connKey] = (previous.rx + rx, previous.tx + tx)
+            tickRates[identity.id] = bucket
+        }
+
+        if cls == .internet || cls == .local {
+            // The last few minutes are kept in memory either way. Only the saved history
+            // depends on the "Keep a history" setting.
+            recent.add(now: now, app: identity.id, name: identity.name, path: identity.path, ip: row.remoteIP ?? "*", rx: rx, tx: tx)
+            if prefs.recordHistory {
+                ledger?.addUsage(now: now, app: identity.id, ip: row.remoteIP ?? "*", rx: rx, tx: tx)
+            }
+        }
+
+        // Undertow still lists its own traffic, but it has nothing to gain from alerting about itself.
+        if cls == .internet, identity.executable == nil || identity.executable != ownExecutable {
+            let destination = alertDestination(ip: row.remoteIP)
+            let flow = ObservedFlow(
+                app: identity, signer: currentSigner, cls: cls, destination: destination,
+                rx: rx, tx: tx, outsideVPN: outsideVPN, interface: iface.map(interfaceLabel),
+                endpoint: row.remoteIP.map { ip in
+                    let host = ip.contains(":") ? "[\(ip)]" : ip
+                    return row.remotePort.map { "\(host):\($0)" } ?? host
+                })
+            if identity.kind != .exited, tx > 0 { activePairs.insert("\(identity.id)|\(destination)") }
+            if identity.path != nil, currentSigner == nil {
+                deferFlow(flow)
+            } else {
+                newEvents += detector.observe(flow, now: now, idleSeconds: idle)
+            }
         }
     }
 
@@ -584,10 +644,11 @@ public final class Monitor {
         if !signerInFlight.contains(path) {
             signerInFlight.insert(path)
             let operation = BlockOperation { [weak self] in
-                let result = CodeSigning.inspect(path: path)
-                self?.queue.async {
-                    self?.signers[path] = (result, stamp)
-                    self?.signerInFlight.remove(path)
+                guard let self else { return }
+                let result = self.inspectSignature(path)
+                self.queue.async {
+                    self.signers[path] = (result, stamp)
+                    self.signerInFlight.remove(path)
                 }
             }
             // Extensions are small and decide whether VPN traffic gets counted twice, so they go first.
@@ -760,7 +821,7 @@ public final class Monitor {
                 totalDown: app.totalDown, totalUp: app.totalUp,
                 isNew: app.isNewThisSession, trusted: detector.isTrusted(app.identity, signer: appSigner),
                 verifiedApple: app.identity.isVerifiedApple(signer: appSigner),
-                verifiedTunnel: appSigner?.isPacketTunnel ?? false,
+                verifiedTunnel: app.identity.isVerifiedTunnel(signer: appSigner),
                 signerPending: app.identity.path != nil && appSigner == nil,
                 connections: connections, primaryClass: primary))
         }
@@ -795,6 +856,14 @@ public final class Monitor {
     }
 
     // MARK: History queries
+
+    /// Reads the last few minutes of traffic, safely from any thread.
+    public func recentUsage<T>(_ body: (RecentUsage) -> T) -> T {
+        queue.sync {
+            recent.prune(now: Date())
+            return body(recent)
+        }
+    }
 
     public func lookupDestination(ip: String) -> Destination {
         queue.sync {

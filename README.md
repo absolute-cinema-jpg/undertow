@@ -29,6 +29,31 @@ open /Applications/Undertow.app
 
 You only need the Command Line Tools (`xcode-select --install`), not Xcode.
 
+### Updating
+
+From version 1.1, Undertow updates itself. Once a day it asks GitHub whether there's a newer
+release. If there is, the panel and Settings > Data show an **Update Now** button, and nothing is
+installed until you click it. It then:
+
+1. Downloads the release zip.
+2. Checks its SHA-256 against the one published with the release.
+3. Hands it to a small helper inside the app, which checks it again: same app, the exact
+   version expected, and an intact signature.
+4. Swaps it in with a single rename, so there's never a moment with no app installed.
+5. Restarts into the new version.
+
+If anything fails, nothing is changed and you're offered the download page instead. "Open at
+login" stays on across updates.
+
+The helper runs outside any sandbox only so it can replace the app, and confines itself as soon
+as it starts: it has no network access and can only write to the app, a staging folder beside
+it, and its own temporary folder.
+
+To turn off automatic checks, untick **Check for updates automatically** in Settings > Data.
+You can still check by hand there.
+
+Version 1.0.0 can't update itself, so install the next version by hand once.
+
 ## Use
 
 **Click** the menu bar item for the panel. **Right-click** for Settings and Quit. On first
@@ -118,6 +143,8 @@ Undertow's own network use, all listed in Settings > Data:
 | What | When | Can be turned off |
 |---|---|---|
 | Reverse DNS through your normal DNS server | New addresses, only while the panel is open | Yes |
+| Update check to api.github.com | Once a day | Yes, in Settings > Data |
+| Update download from GitHub | Only when you click Update | Not applicable |
 | Ping to your router and 1.1.1.1 | Only while the panel is open | Yes |
 | Owner table from iptoasn.com (about 11 MB) | Only when you ask | It's only ever on request |
 
@@ -147,7 +174,9 @@ Three kinds of traffic are counted separately, so the headline means what it say
 ```bash
 scripts/build.sh checks                      # run the checks
 scripts/build.sh debug                       # faster compile, no optimisation
-scripts/package.sh 1.0.0                     # universal release zip and its checksum
+scripts/package.sh 1.1.0                     # universal release zip, its .sha256, and checks
+scripts/run-update-tests.sh Sources/Undertow # updater logic and installer tests
+scripts/e2e-update-test.sh dist/Undertow.app Undertow-   # a real self-update on throwaway copies
 dist/Undertow.app/Contents/MacOS/Undertow --snapshot /tmp/shots   # render views to PNG
 dist/Undertow.app/Contents/MacOS/Undertow --test-drag              # simulated drags through the settings form
 ```
