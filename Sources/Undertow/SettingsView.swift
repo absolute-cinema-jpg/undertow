@@ -4,6 +4,7 @@ import UndertowCore
 
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
+    @ObservedObject private var feedback = FeedbackNav.shared
 
     var body: some View {
         TabView {
@@ -14,6 +15,7 @@ struct SettingsView: View {
         }
         .frame(width: 500, height: 600)
         .padding(.top, 8)
+        .sheet(isPresented: $feedback.showSheet) { BugReportSheet() }
     }
 }
 
@@ -123,6 +125,8 @@ struct PanelSettings: View {
                     }
                 }
             }
+
+            ToggleCommandSection()
 
             Section {
                 SectionOrderList()
@@ -409,6 +413,7 @@ struct DataSettings: View {
     var body: some View {
         Form {
             UpdatesSection()
+            BugReportSection(report: { FeedbackNav.shared.showSheet = true })
 
             Section("General") {
                 Toggle("Open at login", isOn: Binding(

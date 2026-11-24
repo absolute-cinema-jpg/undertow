@@ -22,7 +22,9 @@ struct UpdatesSection: View {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable().frame(width: 36, height: 36)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(UpdateConfig.appName) \(updater.currentVersion)").font(.body.weight(.medium))
+                    (Text("\(UpdateConfig.appName) \(updater.currentVersion)").font(.body.weight(.medium))
+                        + Text(UpdateConfig.credit.map { " – \($0)" } ?? "")
+                            .font(.callout).foregroundColor(.secondary))
                     UpdateStatusLine()
                 }
                 Spacer()

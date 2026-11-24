@@ -9,6 +9,10 @@ enum UpdateConfig {
     /// The app's name, as people see it ("Bin Watch").
     static let appName = "Undertow"
 
+    /// A quiet credit after the version in Settings' Updates box, in the caption grey:
+    /// "Undertow 1.1.0 – made by Alex Stuart". nil leaves just the name and version.
+    static let credit: String? = "made by Alex Stuart"
+
     /// Release zips are named "\(assetPrefix)\(version).zip", e.g. "Bin-Watch-1.7.zip".
     static let assetPrefix = "Undertow-"
 

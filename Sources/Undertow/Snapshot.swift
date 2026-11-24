@@ -74,6 +74,12 @@ enum Snapshot {
                 for (view, name) in tabs {
                     render(view.environmentObject(store).frame(width: 500), scheme: scheme, to: "\(directory)/\(name).png")
                 }
+                for kind in BugReport.Kind.allCases {
+                    BugReportSheet.startKind = kind
+                    render(BugReportSheet(), scheme: scheme, to: "\(directory)/feedback-\(kind.rawValue).png")
+                }
+                BugReportSheet.startKind = .bug
+                try? BugReportDiagnostics.collect().write(toFile: "\(directory)/feedback-details.txt", atomically: true, encoding: .utf8)
             }))
 
         func runStep(_ index: Int) {

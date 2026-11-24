@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         store.onBadgeChanged = { [weak self] in self?.redraw() }
         redraw()
         store.start()
+        BugReportConfig.appDetails = { [weak store] in store?.feedbackDetails ?? [] }
 
         // Maintenance: runs the same owner table refresh as the Update button in Settings.
         if CommandLine.arguments.contains("--update-owners") {
@@ -160,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Panel", action: #selector(togglePanelAction), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(openSettingsAction), keyEquivalent: ",").target = self
+        menu.addItem(withTitle: "Send Feedback…", action: #selector(sendFeedback), keyEquivalent: "").target = self
         if Updater.shared.phase == .available, let version = Updater.shared.update?.version {
             menu.addItem(withTitle: "Update to \(version)…", action: #selector(installUpdate), keyEquivalent: "").target = self
         }
@@ -173,6 +175,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     @objc private func togglePanelAction() { togglePanel() }
     @objc private func installUpdate() { Updater.shared.installAsking() }
     @objc private func openSettingsAction() { openSettings() }
+    @objc private func sendFeedback() {
+        openSettings()  // a sheet needs a window
+        FeedbackNav.shared.showSheet = true
+    }
 
     private func togglePanel() {
         if let popover, popover.isShown {

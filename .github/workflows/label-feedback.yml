@@ -1,0 +1,44 @@
+# Labels issues sent from the app's Send Feedback form: "bug" for a bug report,
+# "enhancement" for a feature request.
+#
+# The form's link asks for the label too, but GitHub only applies labels from a link
+# when the person is allowed to label issues, so most people's reports would arrive
+# unlabelled. The form ends each report with a hidden line, <!-- feedback: bug --> or
+# <!-- feedback: feature -->, and this reads it (or failing that, the "Bug:" / "Idea:"
+# at the start of the title).
+#
+# It only adds a label. The issue's text is read inside the script, never pasted into
+# a command, so nothing in an issue can run here.
+name: Label feedback
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const title = (issue.title || '').trim().toLowerCase();
+            const marker = body.match(/<!--\s*feedback:\s*(bug|feature)\s*-->/);
+            const kind = marker ? marker[1]
+              : title.startsWith('bug:') ? 'bug'
+              : title.startsWith('idea:') ? 'feature'
+              : null;
+            if (!kind) return;
+            const label = kind === 'bug' ? 'bug' : 'enhancement';
+            if (issue.labels.some(l => l.name === label)) return;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: [label],
+            });

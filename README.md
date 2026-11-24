@@ -56,7 +56,7 @@ Version 1.0.0 can't update itself, so install the next version by hand once.
 
 ## Use
 
-**Click** the menu bar item for the panel. **Right-click** for Settings and Quit. On first
+**Click** the menu bar item for the panel. **Right-click** for Settings, Send Feedback and Quit. On first
 launch the panel offers to download the IP owner table, which names most destinations.
 
 ### Open the panel from a keyboard shortcut
@@ -65,11 +65,15 @@ launch the panel offers to download the IP owner table, which names most destina
 /Applications/Undertow.app/Contents/MacOS/Undertow --toggle-panel
 ```
 
+Settings > Panel > Keyboard shortcut shows this command with a Copy button, using the path of
+your copy if it's somewhere other than Applications.
+
 This opens the panel, or closes it if it's already open, and starts Undertow if it isn't
 running. The panel appears in about 0.1 seconds. Closing it hands the keyboard straight back
 to the app you were in.
 
-Bind that command to any launcher or hotkey tool. For
+Bind that command to any tool that runs a command on a keypress, such as BetterTouchTool,
+Raycast or Hammerspoon. For
 [Karabiner-Elements](https://karabiner-elements.pqrs.org), a ready-made rule for
 Right Command + U is in [extras/karabiner-undertow.json](extras/karabiner-undertow.json):
 
@@ -79,6 +83,28 @@ cp extras/karabiner-undertow.json ~/.config/karabiner/assets/complex_modificatio
 
 Then enable it under Complex Modifications > Add predefined rule. To use a different key,
 change `key_code` and `modifiers` in the file first.
+
+### Report a bug or suggest a feature
+
+Right-click the menu bar item and choose **Send Feedback…**, or use Settings > Data >
+Feedback. One form covers both: **Report a Bug** or **Suggest a Feature**. **Continue on
+GitHub…** opens this repo's new-issue page in your browser, with everything filled in.
+Undertow sends nothing itself. You check the issue and post it on GitHub, which needs a free
+account. **Copy Text** copies it instead, for an email.
+
+Bug reports include technical details by default. Feature requests don't, but you can tick
+the box. **Show What's Included** shows the exact text. It holds:
+
+- Undertow's version, the macOS version and the processor type
+- Undertow's settings and on/off states
+- counts: how many apps and destinations are active, and how many alerts of each kind are on record
+- whether a VPN is connected and whether the connection looks healthy
+- the updater's recent log lines
+
+It never includes app names, addresses, hostnames, network or VPN names, or the latency
+check address. Issues are public, so don't add anything private when you write one. A GitHub
+Action ([label-feedback.yml](.github/workflows/label-feedback.yml)) labels each new issue
+`bug` or `enhancement` from a hidden marker the form adds.
 
 ## What it answers
 
@@ -147,6 +173,7 @@ Undertow's own network use, all listed in Settings > Data:
 | Update download from GitHub | Only when you click Update | Not applicable |
 | Ping to your router and 1.1.1.1 | Only while the panel is open | Yes |
 | Owner table from iptoasn.com (about 11 MB) | Only when you ask | It's only ever on request |
+| Feedback | Never sent by Undertow: it opens GitHub in your browser for you to post | Not applicable |
 
 ## How it works
 
