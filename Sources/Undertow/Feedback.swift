@@ -74,9 +74,9 @@ struct ToggleCommandSection: View {
                 }
             }
         } header: {
-            Text("Keyboard shortcut")
+            Text("Shell command")
         } footer: {
-            FooterText("This command opens the panel, or closes it if it's open. To use a key of your choice, bind the command in an app that runs commands on a keypress, such as Karabiner-Elements, BetterTouchTool, Raycast or Hammerspoon. If Undertow isn't running, the command starts it.")
+            FooterText("This command opens the panel, or closes it if it's open, and starts Undertow if it isn't running. To run it with a key of your choice, bind it in Karabiner-Elements, Keyboard Maestro or Automator. In Automator, make a Quick Action that runs it as a shell script, then give it a shortcut in System Settings > Keyboard > Keyboard Shortcuts > Services.")
         }
     }
 }

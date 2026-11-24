@@ -65,15 +65,16 @@ launch the panel offers to download the IP owner table, which names most destina
 /Applications/Undertow.app/Contents/MacOS/Undertow --toggle-panel
 ```
 
-Settings > Panel > Keyboard shortcut shows this command with a Copy button, using the path of
+Settings > Panel > Shell command shows this command with a Copy button, using the path of
 your copy if it's somewhere other than Applications.
 
 This opens the panel, or closes it if it's already open, and starts Undertow if it isn't
 running. The panel appears in about 0.1 seconds. Closing it hands the keyboard straight back
 to the app you were in.
 
-Bind that command to any tool that runs a command on a keypress, such as BetterTouchTool,
-Raycast or Hammerspoon. For
+Bind that command to a key in Karabiner-Elements, Keyboard Maestro or Automator. In
+Automator, make a Quick Action with a Run Shell Script action, then give it a shortcut in
+System Settings > Keyboard > Keyboard Shortcuts > Services. For
 [Karabiner-Elements](https://karabiner-elements.pqrs.org), a ready-made rule for
 Right Command + U is in [extras/karabiner-undertow.json](extras/karabiner-undertow.json):
 
